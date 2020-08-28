@@ -5,21 +5,17 @@
         "labels": {
             "app": "seldon"
         },
-        "name": "example-canary"
+        "name": "example"
     },
     "spec": {
-        "name": "canary-model",
-	"annotations": {
-	    "seldon.io/ambassador-weight":"25",
-	    "seldon.io/ambassador-service-name":"example"	    
-	},	
+        "name": "canary-example",
         "predictors": [
             {
                 "componentSpecs": [{
                     "spec": {
                         "containers": [
                             {
-                                "image": "seldonio/mock_classifier_rest:1.1",
+                                "image": "seldonio/mock_classifier_rest:1.4",
                                 "imagePullPolicy": "IfNotPresent",
                                 "name": "classifier"
                             }
@@ -35,8 +31,34 @@
                     "endpoint": {
                         "type": "REST"
                     }},
-                "name": "single",
-                "replicas": 1
+                "name": "main",
+                "replicas": 1,
+		"traffic": 75
+            },
+            {
+                "componentSpecs": [{
+                    "spec": {
+                        "containers": [
+                            {
+                                "image": "seldonio/mock_classifier_rest:1.4",
+                                "imagePullPolicy": "IfNotPresent",
+                                "name": "classifier"
+                            }
+                        ],
+                        "terminationGracePeriodSeconds": 1
+                    }}
+                                  ],
+                "graph":
+                {
+                    "children": [],
+                    "name": "classifier",
+                    "type": "MODEL",
+                    "endpoint": {
+                        "type": "REST"
+                    }},
+                "name": "canary",
+                "replicas": 1,
+		"traffic": 25		
             }
         ]
     }

@@ -64,7 +64,7 @@ RUN pip install -r requirements.txt
 EXPOSE 5000
 
 # Define environment variable
-ENV MODEL_NAME SimpleModel
+ENV MODEL_NAME MyModel
 ENV API_TYPE REST
 ENV SERVICE_TYPE MODEL
 ENV PERSISTENCE 0
@@ -105,21 +105,30 @@ The service type being created. Available options are:
 
 Set either to 0 or 1. Default is 0. If set to 1 then your model will be saved periodically to redis and loaded from redis (if exists) or created fresh if not.
 
+### FLASK_JSONIFY_PRETTYPRINT_REGULAR
+
+Sets the flask application configuration `JSONIFY_PRETTYPRINT_REGULAR` for the REST API. Available options are `True`
+or `False`. If nothing is specified, flask's default value is used.
+
+### FLASK_JSON_SORT_KEYS
+
+Sets the flask application configuration `JSON_SORT_KEYS` for the REST API. Available options are `True` or `False`.
+If nothing is specified, flask's default value is used.
 
 ## Creating different service types
 
 ### MODEL
 
- * [A minimal skeleton for model source code](https://github.com/cliveseldon/seldon-core/tree/s2i/wrappers/s2i/python/test/model-template-app)
+ * [A minimal skeleton for model source code](https://github.com/SeldonIO/seldon-core/tree/master/wrappers/s2i/python/test/model-template-app)
  * [Example model notebooks](../examples/notebooks.html)
 
 ### ROUTER
- * [Description of routers in Seldon Core](../components/routers.html)
- * [A minimal skeleton for router source code](https://github.com/cliveseldon/seldon-core/tree/s2i/wrappers/s2i/python/test/router-template-app)
+ * [Description of routers in Seldon Core](../analytics/routers.html)
+ * [A minimal skeleton for router source code](https://github.com/SeldonIO/seldon-core/tree/master/wrappers/s2i/python/test/router-template-app)
 
 ### TRANSFORMER
 
- * [A minimal skeleton for transformer source code](https://github.com/cliveseldon/seldon-core/tree/s2i/wrappers/s2i/python/test/transformer-template-app)
+ * [A minimal skeleton for transformer source code](https://github.com/SeldonIO/seldon-core/tree/master/wrappers/s2i/python/test/transformer-template-app)
  * [Example transformers](https://github.com/SeldonIO/seldon-core/tree/master/examples/transformers)
 
 
@@ -138,38 +147,37 @@ These arguments can be set when deploying in a Seldon Deployment. An example can
 
 ```
  "graph": {
-		    "name": "tfserving-proxy",
-		    "endpoint": { "type" : "REST" },
-		    "type": "MODEL",
-		    "children": [],
-		    "parameters":
-		    [
-			{
-			    "name":"grpc_endpoint",
-			    "type":"STRING",
-			    "value":"localhost:8000"
-			},
-			{
-			    "name":"model_name",
-			    "type":"STRING",
-			    "value":"mnist-model"
-			},
-			{
-			    "name":"model_output",
-			    "type":"STRING",
-			    "value":"scores"
-			},
-			{
-			    "name":"model_input",
-			    "type":"STRING",
-			    "value":"images"
-			},
-			{
-			    "name":"signature_name",
-			    "type":"STRING",
-			    "value":"predict_images"
-			}
-		    ]
+    "name": "tfserving-proxy",
+    "endpoint": {"type" : "REST"},
+    "type": "MODEL",
+    "children": [],
+    "parameters": [
+    	{
+    	    "name":"grpc_endpoint",
+    	    "type":"STRING",
+    	    "value":"localhost:8000"
+    	},
+    	{
+    	    "name":"model_name",
+    	    "type":"STRING",
+    	    "value":"mnist-model"
+    	},
+    	{
+    	    "name":"model_output",
+    	    "type":"STRING",
+    	    "value":"scores"
+    	},
+    	{
+    	    "name":"model_input",
+    	    "type":"STRING",
+    	    "value":"images"
+    	},
+    	{
+    	    "name":"signature_name",
+    	    "type":"STRING",
+    	    "value":"predict_images"
+    	}
+    ]
 },
 ```
 
@@ -182,36 +190,31 @@ The allowable ```type``` values for the parameters are defined in the [proto buf
 
 To add custom metrics to your response you can define an optional method ```metrics``` in your class that returns a list of metric dicts. An example is shown below:
 
-```
+```python
 class MyModel(object):
 
-    def predict(self,X,features_names):
+    def predict(self, X, features_names):
         return X
 
     def metrics(self):
-    	return [{"type":"COUNTER","key":"mycounter","value":1}]
+    	return [{"type": "COUNTER", "key": "mycounter", "value": 1}]
 ```
 
-For more details on custom metrics and the format of the metric dict see [here](../custom_metrics.md).
+For more details on custom metrics and the format of the metric dict see [here](../analytics/analytics.html#custom-metrics).
 
-There is an [example notebook illustrating a model with custom metrics in python](../examples/tmpl_model_with_metrics.html).
+There is an [example notebook illustrating a model with custom metrics in python](../examples/custom_metrics.html).
 
-### Custom Meta Data
+### Custom Request Tags
 ```from version 0.3```
 
-To add custom meta data you can add an optional method ```tags``` which can return a dict of custom meta tags as shown in the example below:
+To add custom request tags data you can add an optional method ```tags``` which can return a dict of custom meta tags as shown in the example below:
 
-```
-class UserObject(object):
+```python
+class MyModel(object):
 
-    def predict(self,X,features_names):
+    def predict(self, X, features_names):
         return X
 
     def tags(self):
-        return {"mytag":1}
+        return {"mytag": 1}
 ```
-
-
-
-
-

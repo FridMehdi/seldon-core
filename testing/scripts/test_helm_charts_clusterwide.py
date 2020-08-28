@@ -1,102 +1,71 @@
-import pytest
-import time
-import subprocess
-from subprocess import run,Popen
-from seldon_utils import *
-from k8s_utils import *
+from seldon_e2e_utils import (
+    wait_for_rollout,
+    wait_for_status,
+    initial_rest_request,
+    rest_request_ambassador,
+    API_AMBASSADOR,
+    assert_model,
+)
+from subprocess import run
+import logging
 
-def wait_for_shutdown(deploymentName):
-    ret = run("kubectl get -n test1 deploy/"+deploymentName, shell=True)
-    while ret.returncode == 0:
-        time.sleep(1)
-        ret = run("kubectl get -n test1 deploy/"+deploymentName, shell=True)
 
-def wait_for_rollout(deploymentName):
-    ret = run("kubectl rollout status -n test1 deploy/"+deploymentName, shell=True)
-    while ret.returncode > 0:
-        time.sleep(1)
-        ret = run("kubectl rollout status -n test1 deploy/"+deploymentName, shell=True)
-
-def initial_rest_request():
-    r = rest_request_api_gateway("oauth-key","oauth-secret","test1",API_GATEWAY_REST)
-    if not r.status_code == 200:
-        time.sleep(1)
-        r = rest_request_api_gateway("oauth-key","oauth-secret","test1",API_GATEWAY_REST)
-        if not r.status_code == 200:
-            time.sleep(5)
-            r = rest_request_api_gateway("oauth-key","oauth-secret","test1",API_GATEWAY_REST)
-    return r
-
-@pytest.mark.usefixtures("seldon_images")
-@pytest.mark.usefixtures("clusterwide_seldon_helm")
 class TestClusterWide(object):
 
     # Test singe model helm script with 4 API methods
-    def test_single_model(self):
-        run("helm delete mymodel --purge", shell=True)
-        run("helm install ../../helm-charts/seldon-single-model --name mymodel --set oauth.key=oauth-key --set oauth.secret=oauth-secret --namespace test1", shell=True, check=True)
-        wait_for_rollout("mymodel-mymodel-7cd068f")
-        r = initial_rest_request()
-        r = rest_request_api_gateway("oauth-key","oauth-secret","test1",API_GATEWAY_REST)
-        res = r.json()
-        print(res)
-        assert r.status_code == 200
-        assert len(r.json()["data"]["tensor"]["values"]) == 1
-        r = rest_request_ambassador("mymodel","test1",API_AMBASSADOR)
-        res = r.json()
-        print(res)
-        assert r.status_code == 200
-        assert len(r.json()["data"]["tensor"]["values"]) == 1
-        r = grpc_request_api_gateway2("oauth-key","oauth-secret","test1",rest_endpoint=API_GATEWAY_REST,grpc_endpoint=API_GATEWAY_GRPC)
-        print(r)
-        r = grpc_request_ambassador2("mymodel","test1",API_AMBASSADOR)
-        print(r)
-        run("helm delete mymodel --purge", shell=True)
+    def test_single_model(self, namespace):
+        command = (
+            "helm install mymodel ../../helm-charts/seldon-single-model "
+            f"--set model.image=seldonio/fixed-model:0.1 "
+            f"--namespace {namespace}"
+        )
+        run(command, shell=True, check=True)
+
+        wait_for_status("mymodel", namespace)
+        wait_for_rollout("mymodel", namespace)
+
+        assert_model("mymodel", namespace, initial=True)
+
+        run("helm delete mymodel", shell=True)
 
     # Test AB Test model helm script with 4 API methods
-    def test_abtest_model(self):
-        run("helm delete myabtest --purge", shell=True)
-        run("helm install ../../helm-charts/seldon-abtest --name myabtest --set oauth.key=oauth-key --set oauth.secret=oauth-secret --namespace test1", shell=True, check=True)
-        wait_for_rollout("myabtest-abtest-41de5b8")
-        wait_for_rollout("myabtest-abtest-df66c5c")
-        r = initial_rest_request()
-        r = rest_request_api_gateway("oauth-key","oauth-secret","test1",API_GATEWAY_REST)
-        res = r.json()
-        print(res)
+    def test_abtest_model(self, namespace):
+        command = (
+            "helm install myabtest ../../helm-charts/seldon-abtest "
+            f"--namespace {namespace}"
+        )
+        run(command, shell=True, check=True)
+        wait_for_status("myabtest", namespace)
+        wait_for_rollout("myabtest", namespace, expected_deployments=2)
+        initial_rest_request("myabtest", namespace)
+        logging.warning("Test Ambassador REST gateway")
+        r = rest_request_ambassador("myabtest", namespace, API_AMBASSADOR)
+        logging.warning(r.json())
         assert r.status_code == 200
         assert len(r.json()["data"]["tensor"]["values"]) == 1
-        r = rest_request_ambassador("myabtest","test1",API_AMBASSADOR)
-        res = r.json()
-        print(res)
-        assert r.status_code == 200
-        assert len(r.json()["data"]["tensor"]["values"]) == 1
-        r = grpc_request_api_gateway2("oauth-key","oauth-secret","test1",rest_endpoint=API_GATEWAY_REST,grpc_endpoint=API_GATEWAY_GRPC)
-        print(r)
-        r = grpc_request_ambassador2("myabtest","test1",API_AMBASSADOR)
-        print(r)
-        run("helm delete myabtest --purge", shell=True)
+        logging.warning("Test Ambassador gRPC gateway")
+        logging.warning(
+            "WARNING SKIPPING FLAKY AMBASSADOR TEST UNTIL AMBASSADOR GRPC ISSUE FIXED.."
+        )
+        run("helm delete myabtest", shell=True)
 
     # Test MAB Test model helm script with 4 API methods
-    def test_mab_model(self):
-        run("helm delete mymab --purge", shell=True)
-        run("helm install ../../helm-charts/seldon-mab --name mymab --set oauth.key=oauth-key --set oauth.secret=oauth-secret --namespace test1", shell=True, check=True)
-        wait_for_rollout("mymab-abtest-41de5b8")
-        wait_for_rollout("mymab-abtest-b8038b2")
-        wait_for_rollout("mymab-abtest-df66c5c")
-        r = initial_rest_request()
-        r = rest_request_api_gateway("oauth-key","oauth-secret","test1",API_GATEWAY_REST)
-        res = r.json()
-        print(res)
+    def test_mab_model(self, namespace):
+        run(
+            f"helm install mymab ../../helm-charts/seldon-mab --namespace {namespace}",
+            shell=True,
+            check=True,
+        )
+        wait_for_status("mymab", namespace)
+        wait_for_rollout("mymab", namespace, expected_deployments=3)
+        initial_rest_request("mymab", namespace)
+        logging.warning("Test Ambassador REST gateway")
+        r = rest_request_ambassador("mymab", namespace, API_AMBASSADOR)
+        logging.warning(r.json())
         assert r.status_code == 200
         assert len(r.json()["data"]["tensor"]["values"]) == 1
-        r = rest_request_ambassador("mymab","test1",API_AMBASSADOR)
-        res = r.json()
-        print(res)
-        assert r.status_code == 200
-        assert len(r.json()["data"]["tensor"]["values"]) == 1
-        r = grpc_request_api_gateway2("oauth-key","oauth-secret","test1",rest_endpoint=API_GATEWAY_REST,grpc_endpoint=API_GATEWAY_GRPC)
-        print(r)
-        r = grpc_request_ambassador2("mymab","test1",API_AMBASSADOR)
-        print(r)
-        run("helm delete mymab --purge", shell=True)
-
+        logging.warning("Test Ambassador gRPC gateway")
+        logging.warning(
+            "WARNING SKIPPING FLAKY AMBASSADOR TEST UNTIL AMBASSADOR GRPC ISSUE FIXED.."
+        )
+        run("helm delete mymab", shell=True)

@@ -28,7 +28,7 @@ run_core_builder_in_host:
 			-v /var/run/docker.sock:/var/run/docker.sock \
 			-v $${HOME}/.m2:/root/.m2 \
 			-v $(SELDON_CORE_LOCAL_DIR):/work \
-			seldonio/core-builder:0.3 bash
+			seldonio/core-builder:0.16 bash
 
 
 run_core_builder_in_minikube:
@@ -37,7 +37,7 @@ run_core_builder_in_minikube:
 			-v /var/run/docker.sock:/var/run/docker.sock \
 			-v /home/docker/.m2:/root/.m2 \
 			-v $(SELDON_CORE_VM_DIR):/work \
-			seldonio/core-builder:0.3 bash
+			seldonio/core-builder:0.16 bash
 
 show_paths:
 	@echo "local: $(SELDON_CORE_LOCAL_DIR)"
@@ -58,4 +58,3 @@ run_python_builder:
 		--user=$$(id -u) \
 		-v $(SELDON_CORE_LOCAL_DIR):/work \
 		seldonio/python-builder:0.2 bash
-

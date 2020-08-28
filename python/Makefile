@@ -1,12 +1,13 @@
 SELDON_CORE_DIR=..
-VERSION=0.3.0
+VERSION := $(shell cat ../version.txt)
 
 .PHONY: get_apis
 get_apis:
 	# Protobuf
 	cp ${SELDON_CORE_DIR}/proto/prediction.proto seldon_core/proto/
 	$(MAKE) -C ../proto/tensorflow/ create_protos
-	cp -r $(SELDON_CORE_DIR)/proto/tensorflow/tensorflow seldon_core/
+	cp -r $(SELDON_CORE_DIR)/proto/tensorflow/tensorflow \
+		seldon_core/proto/
 	$(MAKE) -C ../proto/tensorflow clean
 
 	# OpenAPI
@@ -15,12 +16,31 @@ get_apis:
 .PHONY: build_apis
 build_apis: get_apis
 	# Protobuf
-	cd seldon_core && python -m grpc.tools.protoc -I./ --python_out=./ --grpc_python_out=./ --mypy_out=./ ./proto/prediction.proto
+	cd seldon_core && python \
+		-m grpc.tools.protoc \
+		-I./ \
+		-I./proto/ \
+		--python_out=./ \
+		--grpc_python_out=./ \
+		--mypy_out=./ \
+		./proto/prediction.proto
+	## We build TF's protobufs as well in case the tensorflow package
+	## is not found
+	cd seldon_core/proto && python \
+		-m grpc.tools.protoc \
+		-I./ \
+		-I../ \
+		--python_out=./ \
+		./tensorflow/core/framework/*.proto
+	sed -i "s/from tensorflow/from seldon_core.proto.tensorflow/" seldon_core/proto/*.py
+	sed -i "s/from tensorflow.core.framework/from ./" \
+		$(addprefix seldon_core/proto/tensorflow/core/framework/, \
+			resource_handle_pb2.py tensor_pb2.py tensor_shape_pb2.py types_pb2.py)
 	sed -i "s/from proto/from seldon_core.proto/g" seldon_core/proto/prediction_pb2_grpc.py
 
 .PHONY: update_version
 update_version:
-	sed -i "s/__version__ = .*/__version__ = '$(VERSION)'/g" seldon_core/version.py
+	sed -i 's/__version__ = .*/__version__ = "$(VERSION)"/g' seldon_core/version.py
 
 .PHONY: update_package
 update_package: get_apis build_apis update_version
@@ -29,9 +49,15 @@ update_package: get_apis build_apis update_version
 install:
 	pip install -e .
 
-.PHONY: install-dev
-install-dev:
-	pip install -e . -r requirements.txt
+.PHONY: install_dev
+install_dev:
+	pip install -e . -r requirements-dev.txt
+
+.PHONY: licenses
+licenses:
+	tox --recreate -e licenses
+	cut -d, -f1,3 ./licenses/license_info.csv \
+		> ./licenses/license_info.no_versions.csv
 
 .PHONY: uninstall
 uninstall:
@@ -39,7 +65,7 @@ uninstall:
 
 .PHONY: test
 test:
-	python setup.py test
+	tox
 
 .PHONY: type_check
 type_check:
@@ -67,6 +93,25 @@ push_conda:
 	@echo "1st push: need to submit a pull-request to https://github.com/conda-forge/staged-recipes"
 	@echo "Subsequent pushes: need to for the python-seldon-core feedstock"
 	@echo "Alternatively use anaconda upload to publish on own channel"
+
+setup_linter:
+	pip install black==19.3b0
+
+fmt:
+	black \
+		./ ../testing ../operator/helm ../operator/seldon-operator/hack \
+		--exclude "(testing/scripts/proto|seldon_core/proto/|.eggs|.tox)"
+
+lint: licenses
+	black \
+		--check ./ ../testing \
+		--exclude "(testing/scripts/proto|seldon_core/proto/|.eggs|.tox)"
+	flake8
+	# Check if licenses have changed
+	git \
+		--no-pager diff \
+		--exit-code \
+		./licenses/license_info.no_versions.csv
 
 .PHONY: clean
 clean:

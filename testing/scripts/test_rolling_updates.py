@@ -1,264 +1,242 @@
-import pytest
 import time
-import subprocess
-from subprocess import run,Popen
-from seldon_utils import *
-from k8s_utils import *
+import logging
+import pytest
+from subprocess import run
+from seldon_e2e_utils import (
+    wait_for_status,
+    wait_for_rollout,
+    rest_request_ambassador,
+    initial_rest_request,
+    assert_model,
+    assert_model_during_op,
+    retry_run,
+    API_AMBASSADOR,
+    API_ISTIO_GATEWAY,
+    get_pod_name_for_sdep,
+    wait_for_pod_shutdown,
+    to_resources_path,
+)
 
-def wait_for_shutdown(deploymentName):
-    ret = run("kubectl get deploy/"+deploymentName, shell=True)
-    while ret.returncode == 0:
-        time.sleep(1)
-        ret = run("kubectl get deploy/"+deploymentName, shell=True)
 
-def wait_for_rollout(deploymentName):
-    ret = run("kubectl rollout status deploy/"+deploymentName, shell=True)
-    while ret.returncode > 0:
-        time.sleep(1)
-        ret = run("kubectl rollout status deploy/"+deploymentName, shell=True)
+with_api_gateways = pytest.mark.parametrize(
+    "api_gateway", [API_AMBASSADOR, API_ISTIO_GATEWAY], ids=["ambas", "istio"]
+)
 
-def initial_rest_request():
-    r = rest_request_api_gateway("oauth-key","oauth-secret","seldon")
-    if not r.status_code == 200:
-        time.sleep(1)
-        r = rest_request_api_gateway("oauth-key","oauth-secret","seldon")
-        if not r.status_code == 200:
-            time.sleep(5)
-            r = rest_request_api_gateway("oauth-key","oauth-secret","seldon")
-            if not r.status_code == 200:
-                time.sleep(10)
-                r = rest_request_api_gateway("oauth-key","oauth-secret","seldon")
-    return r
 
-@pytest.mark.usefixtures("seldon_images")
-@pytest.mark.usefixtures("clusterwide_seldon_helm")
+@pytest.mark.sequential
+@pytest.mark.flaky(max_runs=5)
+@with_api_gateways
 class TestRollingHttp(object):
+    # Test updating a model to a multi predictor model
+    def test_rolling_update5(self, namespace, api_gateway):
+        retry_run(f"kubectl apply -f ../resources/graph1.json -n {namespace}")
+        wait_for_status("mymodel", namespace)
+        wait_for_rollout("mymodel", namespace)
+        logging.warning("Initial request")
+        r = initial_rest_request("mymodel", namespace, endpoint=api_gateway)
+        assert r.status_code == 200
+        assert r.json()["data"]["tensor"]["values"] == [1.0, 2.0, 3.0, 4.0]
+        retry_run(f"kubectl apply -f ../resources/graph6.json -n {namespace}")
+        r = initial_rest_request("mymodel", namespace, endpoint=api_gateway)
+        assert r.status_code == 200
+        assert r.json()["data"]["tensor"]["values"] == [1.0, 2.0, 3.0, 4.0]
+        i = 0
+        for i in range(50):
+            r = rest_request_ambassador("mymodel", namespace, api_gateway)
+            assert r.status_code == 200
+            res = r.json()
+            assert (res["data"]["tensor"]["values"] == [1.0, 2.0, 3.0, 4.0]) or (
+                res["data"]["tensor"]["values"] == [5.0, 6.0, 7.0, 8.0]
+            )
+            if (not r.status_code == 200) or (
+                res["data"]["tensor"]["values"] == [5.0, 6.0, 7.0, 8.0]
+            ):
+                break
+            time.sleep(1)
+        assert i < 100
+        logging.warning("Success for test_rolling_update5")
+        run(f"kubectl delete -f ../resources/graph1.json -n {namespace}", shell=True)
+        run(f"kubectl delete -f ../resources/graph6.json -n {namespace}", shell=True)
 
     # Test updating a model with a new image version as the only change
-    def test_rolling_update1(self):
-        run("kubectl delete sdep --all", shell=True)
-        wait_for_shutdown("mymodel-mymodel-e2eb561")
-        run("kubectl apply -f ../resources/graph1.json", shell=True, check=True)
-        wait_for_rollout("mymodel-mymodel-e2eb561")
-        r = initial_rest_request()
+    def test_rolling_update6(self, namespace, api_gateway):
+        retry_run(f"kubectl apply -f ../resources/graph1svc.json -n {namespace}")
+        wait_for_status("mymodel", namespace)
+        wait_for_rollout("mymodel", namespace, expected_deployments=2)
+        logging.warning("Initial request")
+        r = initial_rest_request("mymodel", namespace, endpoint=api_gateway)
         assert r.status_code == 200
-        assert r.json()["data"]["tensor"]["values"] == [1.0,2.0,3.0,4.0]
-        run("kubectl apply -f ../resources/graph2.json", shell=True, check=True)
+        assert r.json()["data"]["tensor"]["values"] == [1.0, 2.0, 3.0, 4.0]
+        retry_run(f"kubectl apply -f ../resources/graph2svc.json -n {namespace}")
+        r = initial_rest_request("mymodel", namespace, endpoint=api_gateway)
+        assert r.status_code == 200
+        assert r.json()["data"]["tensor"]["values"] == [1.0, 2.0, 3.0, 4.0]
         i = 0
         for i in range(100):
-            r = rest_request_api_gateway("oauth-key","oauth-secret","seldon")
-            res = r.json()
-            print(res)
+            r = rest_request_ambassador("mymodel", namespace, api_gateway)
             assert r.status_code == 200
-            assert ((res["meta"]["requestPath"]["complex-model"] == "seldonio/fixed-model:0.1" and res["data"]["tensor"]["values"] == [1.0,2.0,3.0,4.0]) or (res["meta"]["requestPath"]["complex-model"] == "seldonio/fixed-model:0.2" and res["data"]["tensor"]["values"] == [5.0,6.0,7.0,8.0]))
-            if (not r.status_code == 200) or (res["data"]["tensor"]["values"] == [5.0,6.0,7.0,8.0]):
+            res = r.json()
+            assert (res["data"]["tensor"]["values"] == [1.0, 2.0, 3.0, 4.0]) or (
+                res["data"]["tensor"]["values"] == [5.0, 6.0, 7.0, 8.0]
+            )
+            if (not r.status_code == 200) or (
+                res["data"]["tensor"]["values"] == [5.0, 6.0, 7.0, 8.0]
+            ):
                 break
             time.sleep(1)
         assert i < 100
+        logging.warning("Success for test_rolling_update6")
+        run(f"kubectl delete -f ../resources/graph1svc.json -n {namespace}", shell=True)
+        run(f"kubectl delete -f ../resources/graph2svc.json -n {namespace}", shell=True)
 
     # test changing the image version and the name of its container
-    def test_rolling_update2(self):
-        run("kubectl delete sdep --all", shell=True)
-        wait_for_shutdown("mymodel-mymodel-e2eb561")
-        run("kubectl apply -f ../resources/graph1.json", shell=True, check=True)
-        wait_for_rollout("mymodel-mymodel-e2eb561")
-        r = initial_rest_request()
+    def test_rolling_update7(self, namespace, api_gateway):
+        retry_run(f"kubectl apply -f ../resources/graph1svc.json -n {namespace}")
+        wait_for_status("mymodel", namespace)
+        wait_for_rollout("mymodel", namespace, expected_deployments=2)
+        logging.warning("Initial request")
+        r = initial_rest_request("mymodel", namespace, endpoint=api_gateway)
         assert r.status_code == 200
-        assert r.json()["data"]["tensor"]["values"] == [1.0,2.0,3.0,4.0]
-        run("kubectl apply -f ../resources/graph3.json", shell=True, check=True)
+        assert r.json()["data"]["tensor"]["values"] == [1.0, 2.0, 3.0, 4.0]
+        retry_run(f"kubectl apply -f ../resources/graph3svc.json -n {namespace}")
+        r = initial_rest_request("mymodel", namespace, endpoint=api_gateway)
+        assert r.status_code == 200
+        assert r.json()["data"]["tensor"]["values"] == [1.0, 2.0, 3.0, 4.0]
         i = 0
         for i in range(100):
-            r = rest_request_api_gateway("oauth-key","oauth-secret","seldon")
-            res = r.json()
-            print(res)
+            r = rest_request_ambassador("mymodel", namespace, api_gateway)
             assert r.status_code == 200
-            assert (("complex-model" in res["meta"]["requestPath"] and res["meta"]["requestPath"]["complex-model"] == "seldonio/fixed-model:0.1" and res["data"]["tensor"]["values"] == [1.0,2.0,3.0,4.0]) or (res["meta"]["requestPath"]["complex-model2"] == "seldonio/fixed-model:0.2" and res["data"]["tensor"]["values"] == [5.0,6.0,7.0,8.0]))
-            if (not r.status_code == 200) or (res["data"]["tensor"]["values"] == [5.0,6.0,7.0,8.0]):
+            res = r.json()
+            assert (res["data"]["tensor"]["values"] == [1.0, 2.0, 3.0, 4.0]) or (
+                res["data"]["tensor"]["values"] == [5.0, 6.0, 7.0, 8.0]
+            )
+            if (not r.status_code == 200) or (
+                res["data"]["tensor"]["values"] == [5.0, 6.0, 7.0, 8.0]
+            ):
                 break
             time.sleep(1)
         assert i < 100
+        logging.warning("Success for test_rolling_update7")
+        run(f"kubectl delete -f ../resources/graph1svc.json -n {namespace}", shell=True)
+        run(f"kubectl delete -f ../resources/graph3svc.json -n {namespace}", shell=True)
 
     # Test updating a model with a new resource request but same image
-    def test_rolling_update3(self):
-        run("kubectl delete sdep --all", shell=True)
-        wait_for_shutdown("mymodel-mymodel-e2eb561")
-        run("kubectl apply -f ../resources/graph1.json", shell=True, check=True)
-        wait_for_rollout("mymodel-mymodel-e2eb561")
-        r = initial_rest_request()
+    def test_rolling_update8(self, namespace, api_gateway):
+        retry_run(f"kubectl apply -f ../resources/graph1svc.json -n {namespace}")
+        wait_for_status("mymodel", namespace)
+        wait_for_rollout("mymodel", namespace, expected_deployments=2)
+        r = initial_rest_request("mymodel", namespace, endpoint=api_gateway)
         assert r.status_code == 200
-        assert r.json()["data"]["tensor"]["values"] == [1.0,2.0,3.0,4.0]
-        run("kubectl apply -f ../resources/graph4.json", shell=True, check=True)
+        assert r.json()["data"]["tensor"]["values"] == [1.0, 2.0, 3.0, 4.0]
+        retry_run(f"kubectl apply -f ../resources/graph4svc.json -n {namespace}")
+        r = initial_rest_request("mymodel", namespace, endpoint=api_gateway)
+        assert r.status_code == 200
+        assert r.json()["data"]["tensor"]["values"] == [1.0, 2.0, 3.0, 4.0]
         i = 0
         for i in range(50):
-            r = rest_request_api_gateway("oauth-key","oauth-secret","seldon")
-            res = r.json()
-            print(res)
+            r = rest_request_ambassador("mymodel", namespace, api_gateway)
             assert r.status_code == 200
-            assert ((res["meta"]["requestPath"]["complex-model"] == "seldonio/fixed-model:0.1" and res["data"]["tensor"]["values"] == [1.0,2.0,3.0,4.0]))
+            res = r.json()
+            assert res["data"]["tensor"]["values"] == [1.0, 2.0, 3.0, 4.0]
             time.sleep(1)
         assert i == 49
-
+        logging.warning("Success for test_rolling_update8")
+        run(f"kubectl delete -f ../resources/graph1svc.json -n {namespace}", shell=True)
+        run(f"kubectl delete -f ../resources/graph4svc.json -n {namespace}", shell=True)
 
     # Test updating a model with a multi deployment new model
-    def test_rolling_update4(self):
-        run("kubectl delete sdep --all", shell=True)
-        wait_for_shutdown("mymodel-mymodel-e2eb561")
-        run("kubectl apply -f ../resources/graph1.json", shell=True, check=True)
-        wait_for_rollout("mymodel-mymodel-e2eb561")
-        r = initial_rest_request()
+    def test_rolling_update9(self, namespace, api_gateway):
+        retry_run(f"kubectl apply -f ../resources/graph1svc.json -n {namespace}")
+        wait_for_status("mymodel", namespace)
+        wait_for_rollout("mymodel", namespace, expected_deployments=2)
+        r = initial_rest_request("mymodel", namespace, endpoint=api_gateway)
         assert r.status_code == 200
-        assert r.json()["data"]["tensor"]["values"] == [1.0,2.0,3.0,4.0]
-        run("kubectl apply -f ../resources/graph5.json", shell=True, check=True)
+        assert r.json()["data"]["tensor"]["values"] == [1.0, 2.0, 3.0, 4.0]
+        retry_run(f"kubectl apply -f ../resources/graph5svc.json -n {namespace}")
+        r = initial_rest_request("mymodel", namespace, endpoint=api_gateway)
+        assert r.status_code == 200
+        assert r.json()["data"]["tensor"]["values"] == [1.0, 2.0, 3.0, 4.0]
         i = 0
         for i in range(50):
-            r = rest_request_api_gateway("oauth-key","oauth-secret","seldon")
-            res = r.json()
-            print(res)
+            r = rest_request_ambassador("mymodel", namespace, api_gateway)
             assert r.status_code == 200
-            assert (("complex-model" in res["meta"]["requestPath"] and res["meta"]["requestPath"]["complex-model"] == "seldonio/fixed-model:0.1" and res["data"]["tensor"]["values"] == [1.0,2.0,3.0,4.0]) or (res["meta"]["requestPath"]["model1"] == "seldonio/fixed-model:0.1" and res["data"]["tensor"]["values"] == [1.0,2.0,3.0,4.0] and res["meta"]["requestPath"]["model2"] == "seldonio/fixed-model:0.1"))
-            if (not r.status_code == 200) or ("model1" in res["meta"]["requestPath"]):
-                break
-            time.sleep(1)
-        assert i < 100
-
-    # Test updating a model to a multi predictor model
-    def test_rolling_update5(self):
-        run("kubectl delete sdep --all", shell=True)
-        wait_for_shutdown("mymodel-mymodel-e2eb561")
-        run("kubectl apply -f ../resources/graph1.json", shell=True, check=True)
-        wait_for_rollout("mymodel-mymodel-e2eb561")
-        r = initial_rest_request()
-        assert r.status_code == 200
-        assert r.json()["data"]["tensor"]["values"] == [1.0,2.0,3.0,4.0]
-        run("kubectl apply -f ../resources/graph6.json", shell=True, check=True)
-        i = 0
-        for i in range(50):
-            r = rest_request_api_gateway("oauth-key","oauth-secret","seldon")
             res = r.json()
-            print(res)
-            assert r.status_code == 200
-            assert (("complex-model" in res["meta"]["requestPath"] and res["meta"]["requestPath"]["complex-model"] == "seldonio/fixed-model:0.1" and res["data"]["tensor"]["values"] == [1.0,2.0,3.0,4.0]) or (res["meta"]["requestPath"]["complex-model"] == "seldonio/fixed-model:0.2" and res["data"]["tensor"]["values"] == [5.0,6.0,7.0,8.0]))
-            if (not r.status_code == 200) or (res["data"]["tensor"]["values"] == [5.0,6.0,7.0,8.0]):
-                break
-            time.sleep(1)
-        assert i < 100
-
-
-
-    # Test updating a model with a new image version as the only change
-    def test_rolling_update6(self):
-        run("kubectl delete sdep --all", shell=True)
-        wait_for_shutdown("mymodel-mymodel-e2eb561")
-        wait_for_shutdown("mymodel-mymodel-svc-orch-8e2a24b")
-        run("kubectl apply -f ../resources/graph1svc.json", shell=True, check=True)
-        wait_for_rollout("mymodel-mymodel-svc-orch-8e2a24b")
-        wait_for_rollout("mymodel-mymodel-e2eb561")
-        r = initial_rest_request()
-        assert r.status_code == 200
-        assert r.json()["data"]["tensor"]["values"] == [1.0,2.0,3.0,4.0]
-        run("kubectl apply -f ../resources/graph2svc.json", shell=True, check=True)
-        i = 0
-        for i in range(100):
-            r = rest_request_api_gateway("oauth-key","oauth-secret","seldon")
-            res = r.json()
-            print(res)
-            assert r.status_code == 200
-            assert ((res["meta"]["requestPath"]["complex-model"] == "seldonio/fixed-model:0.1" and res["data"]["tensor"]["values"] == [1.0,2.0,3.0,4.0]) or (res["meta"]["requestPath"]["complex-model"] == "seldonio/fixed-model:0.2" and res["data"]["tensor"]["values"] == [5.0,6.0,7.0,8.0]))
-            if (not r.status_code == 200) or (res["data"]["tensor"]["values"] == [5.0,6.0,7.0,8.0]):
-                break
-            time.sleep(1)
-        assert i < 100
-
-    # test changing the image version and the name of its container
-    def test_rolling_update7(self):
-        run("kubectl delete sdep --all", shell=True)
-        wait_for_shutdown("mymodel-mymodel-e2eb561")
-        wait_for_shutdown("mymodel-mymodel-svc-orch-8e2a24b")
-        run("kubectl apply -f ../resources/graph1svc.json", shell=True, check=True)
-        wait_for_rollout("mymodel-mymodel-svc-orch-8e2a24b")
-        wait_for_rollout("mymodel-mymodel-e2eb561")
-        r = initial_rest_request()
-        assert r.status_code == 200
-        assert r.json()["data"]["tensor"]["values"] == [1.0,2.0,3.0,4.0]
-        run("kubectl apply -f ../resources/graph3svc.json", shell=True, check=True)
-        i = 0
-        for i in range(100):
-            r = rest_request_api_gateway("oauth-key","oauth-secret","seldon")
-            res = r.json()
-            print(res)
-            assert r.status_code == 200
-            assert (("complex-model" in res["meta"]["requestPath"] and res["meta"]["requestPath"]["complex-model"] == "seldonio/fixed-model:0.1" and res["data"]["tensor"]["values"] == [1.0,2.0,3.0,4.0]) or (res["meta"]["requestPath"]["complex-model2"] == "seldonio/fixed-model:0.2" and res["data"]["tensor"]["values"] == [5.0,6.0,7.0,8.0]))
-            if (not r.status_code == 200) or (res["data"]["tensor"]["values"] == [5.0,6.0,7.0,8.0]):
-                break
-            time.sleep(1)
-        assert i < 100
-
-    # Test updating a model with a new resource request but same image
-    def test_rolling_update8(self):
-        run("kubectl delete sdep --all", shell=True)
-        wait_for_shutdown("mymodel-mymodel-e2eb561")
-        wait_for_shutdown("mymodel-mymodel-svc-orch-8e2a24b")
-        run("kubectl apply -f ../resources/graph1svc.json", shell=True, check=True)
-        wait_for_rollout("mymodel-mymodel-svc-orch-8e2a24b")
-        wait_for_rollout("mymodel-mymodel-e2eb561")
-        r = initial_rest_request()
-        assert r.status_code == 200
-        assert r.json()["data"]["tensor"]["values"] == [1.0,2.0,3.0,4.0]
-        run("kubectl apply -f ../resources/graph4svc.json", shell=True, check=True)
-        i = 0
-        for i in range(50):
-            r = rest_request_api_gateway("oauth-key","oauth-secret","seldon")
-            res = r.json()
-            print(res)
-            assert r.status_code == 200
-            assert ((res["meta"]["requestPath"]["complex-model"] == "seldonio/fixed-model:0.1" and res["data"]["tensor"]["values"] == [1.0,2.0,3.0,4.0]))
+            assert res["data"]["tensor"]["values"] == [1.0, 2.0, 3.0, 4.0]
             time.sleep(1)
         assert i == 49
-
-    # Test updating a model with a multi deployment new model
-    def test_rolling_update9(self):
-        run("kubectl delete sdep --all", shell=True)
-        wait_for_shutdown("mymodel-mymodel-e2eb561")
-        wait_for_shutdown("mymodel-mymodel-svc-orch-8e2a24b")
-        run("kubectl apply -f ../resources/graph1svc.json", shell=True, check=True)
-        wait_for_rollout("mymodel-mymodel-svc-orch-8e2a24b")
-        wait_for_rollout("mymodel-mymodel-e2eb561")
-        r = initial_rest_request()
-        assert r.status_code == 200
-        assert r.json()["data"]["tensor"]["values"] == [1.0,2.0,3.0,4.0]
-        run("kubectl apply -f ../resources/graph5svc.json", shell=True, check=True)
-        i = 0
-        for i in range(50):
-            r = rest_request_api_gateway("oauth-key","oauth-secret","seldon")
-            res = r.json()
-            print(res)
-            assert r.status_code == 200
-            assert (("complex-model" in res["meta"]["requestPath"] and res["meta"]["requestPath"]["complex-model"] == "seldonio/fixed-model:0.1" and res["data"]["tensor"]["values"] == [1.0,2.0,3.0,4.0]) or (res["meta"]["requestPath"]["model1"] == "seldonio/fixed-model:0.1" and res["data"]["tensor"]["values"] == [1.0,2.0,3.0,4.0] and res["meta"]["requestPath"]["model2"] == "seldonio/fixed-model:0.1"))
-            if (not r.status_code == 200) or ("model1" in res["meta"]["requestPath"]):
-                break
-            time.sleep(1)
-            assert i < 100
+        logging.warning("Success for test_rolling_update9")
+        run(f"kubectl delete -f ../resources/graph1svc.json -n {namespace}", shell=True)
+        run(f"kubectl delete -f ../resources/graph5svc.json -n {namespace}", shell=True)
 
     # Test updating a model to a multi predictor model
-    def test_rolling_update10(self):
-        run("kubectl delete sdep --all", shell=True)
-        wait_for_shutdown("mymodel-mymodel-e2eb561")
-        wait_for_shutdown("mymodel-mymodel-svc-orch-8e2a24b")
-        run("kubectl apply -f ../resources/graph1svc.json", shell=True, check=True)
-        wait_for_rollout("mymodel-mymodel-svc-orch-8e2a24b")
-        wait_for_rollout("mymodel-mymodel-e2eb561")
-        r = initial_rest_request()
+    def test_rolling_update10(self, namespace, api_gateway):
+        retry_run(f"kubectl apply -f ../resources/graph1svc.json -n {namespace}")
+        wait_for_status("mymodel", namespace)
+        wait_for_rollout("mymodel", namespace, expected_deployments=2)
+        r = initial_rest_request("mymodel", namespace, endpoint=api_gateway)
         assert r.status_code == 200
-        assert r.json()["data"]["tensor"]["values"] == [1.0,2.0,3.0,4.0]
-        run("kubectl apply -f ../resources/graph6svc.json", shell=True, check=True)
+        assert r.json()["data"]["tensor"]["values"] == [1.0, 2.0, 3.0, 4.0]
+        retry_run(f"kubectl apply -f ../resources/graph6svc.json -n {namespace}")
+        r = initial_rest_request("mymodel", namespace, endpoint=api_gateway)
+        assert r.status_code == 200
+        assert r.json()["data"]["tensor"]["values"] == [1.0, 2.0, 3.0, 4.0]
         i = 0
         for i in range(50):
-            r = rest_request_api_gateway("oauth-key","oauth-secret","seldon")
-            res = r.json()
-            print(res)
+            r = rest_request_ambassador("mymodel", namespace, api_gateway)
             assert r.status_code == 200
-            assert (("complex-model" in res["meta"]["requestPath"] and res["meta"]["requestPath"]["complex-model"] == "seldonio/fixed-model:0.1" and res["data"]["tensor"]["values"] == [1.0,2.0,3.0,4.0]) or (res["meta"]["requestPath"]["complex-model"] == "seldonio/fixed-model:0.2" and res["data"]["tensor"]["values"] == [5.0,6.0,7.0,8.0]))
-            if (not r.status_code == 200) or (res["data"]["tensor"]["values"] == [5.0,6.0,7.0,8.0]):
+            res = r.json()
+            assert (res["data"]["tensor"]["values"] == [1.0, 2.0, 3.0, 4.0]) or (
+                res["data"]["tensor"]["values"] == [5.0, 6.0, 7.0, 8.0]
+            )
+            if (not r.status_code == 200) or (
+                res["data"]["tensor"]["values"] == [5.0, 6.0, 7.0, 8.0]
+            ):
                 break
             time.sleep(1)
         assert i < 100
+        logging.warning("Success for test_rolling_update10")
+        run(f"kubectl delete -f ../resources/graph1svc.json -n {namespace}", shell=True)
+        run(f"kubectl delete -f ../resources/graph6svc.json -n {namespace}", shell=True)
+
+
+@pytest.mark.flaky(max_runs=3)
+@with_api_gateways
+@pytest.mark.parametrize(
+    "from_deployment,to_deployment,change",
+    [
+        ("graph1.json", "graph2.json", True),  # New image version
+        (
+            "graph1.json",
+            "graph3.json",
+            True,
+        ),  # New image version and new name of container
+        ("graph1.json", "graph4.json", True),  # New resource request but same image
+        ("graph1.json", "graph5.json", True),  # Update with multi-deployment new model
+        ("graph1.json", "graph8.json", True),  # From v1alpha2 to v1
+        ("graph7.json", "graph8.json", False),  # From v1alpha3 to v1
+    ],
+)
+def test_rolling_deployment(
+    namespace, api_gateway, from_deployment, to_deployment, change
+):
+    from_file_path = to_resources_path(from_deployment)
+    retry_run(f"kubectl apply -f {from_file_path} -n {namespace}")
+    wait_for_status("mymodel", namespace)
+    wait_for_rollout("mymodel", namespace)
+    assert_model("mymodel", namespace, initial=True, endpoint=api_gateway)
+
+    old_pod_name = get_pod_name_for_sdep("mymodel", namespace)[0]
+    to_file_path = to_resources_path(to_deployment)
+
+    def _update_model():
+        retry_run(f"kubectl apply -f {to_file_path} -n {namespace}")
+        if change:
+            wait_for_pod_shutdown(old_pod_name, namespace)
+        wait_for_status("mymodel", namespace)
+        time.sleep(2)  # Wait a little after deployment marked Available
+
+    assert_model_during_op(_update_model, "mymodel", namespace, endpoint=api_gateway)
+
+    delete_cmd = f"kubectl delete --ignore-not-found -n {namespace}"
+    run(f"{delete_cmd} -f {from_file_path}", shell=True)
+    run(f"{delete_cmd} -f {to_file_path}", shell=True)

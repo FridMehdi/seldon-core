@@ -1,9 +1,13 @@
+import logging
+import os
+import numpy as np
+
 from seldon_core.api_tester import run_predict, run_send_feedback
 from unittest import mock
 from seldon_core.utils import array_to_grpc_datadef, seldon_message_to_json
 from seldon_core.proto import prediction_pb2
-import numpy as np
-from os.path import dirname, join
+
+from .conftest import RESOURCES_PATH
 
 
 class MockResponse:
@@ -30,25 +34,52 @@ class Bunch(object):
         self.__dict__.update(adict)
 
 
-@mock.patch('requests.post', side_effect=mocked_requests_post_success)
+@mock.patch("requests.post", side_effect=mocked_requests_post_success)
 def test_predict_rest(mock_post):
-    filename = join(dirname(__file__), "model-template-app", "contract.json")
-    args_dict = {"contract": filename, "host": "a", "port": 1000, "n_requests": 1, "batch_size": 1,
-                 "endpoint": "predict", "prnt": True,
-                 "grpc": False, "tensor": True, "oauth_key": None, "oauth_secret": None, "deployment": "abc",
-                 "namespace": None}
+    filename = os.path.join(RESOURCES_PATH, "model-template-app", "contract.json")
+    args_dict = {
+        "contract": filename,
+        "host": "a",
+        "port": 1000,
+        "n_requests": 1,
+        "batch_size": 1,
+        "endpoint": "predict",
+        "prnt": True,
+        "grpc": False,
+        "tensor": True,
+        "oauth_key": None,
+        "oauth_secret": None,
+        "deployment": "abc",
+        "namespace": None,
+    }
     args = Bunch(args_dict)
     run_predict(args)
-    print(mock_post.call_args)
-    assert mock_post.call_args[1]["json"]["data"]["names"] == ["sepal_length", "sepal_width", "petal_length", "petal_width"]
+    logging.info(mock_post.call_args)
+    assert mock_post.call_args[1]["json"]["data"]["names"] == [
+        "sepal_length",
+        "sepal_width",
+        "petal_length",
+        "petal_width",
+    ]
 
 
-@mock.patch('requests.post', side_effect=mocked_requests_post_success)
+@mock.patch("requests.post", side_effect=mocked_requests_post_success)
 def test_feedback_rest(mock_post):
-    filename = join(dirname(__file__), "model-template-app", "contract.json")
-    args_dict = {"contract": filename, "host": "a", "port": 1000, "n_requests": 1, "batch_size": 1,
-                 "endpoint": "predict", "prnt": True,
-                 "grpc": False, "tensor": True, "oauth_key": None, "oauth_secret": None, "deployment": "abc",
-                 "namespace": None}
+    filename = os.path.join(RESOURCES_PATH, "model-template-app", "contract.json")
+    args_dict = {
+        "contract": filename,
+        "host": "a",
+        "port": 1000,
+        "n_requests": 1,
+        "batch_size": 1,
+        "endpoint": "predict",
+        "prnt": True,
+        "grpc": False,
+        "tensor": True,
+        "oauth_key": None,
+        "oauth_secret": None,
+        "deployment": "abc",
+        "namespace": None,
+    }
     args = Bunch(args_dict)
     run_send_feedback(args)
